@@ -35,3 +35,8 @@ Combined Functionality:
 
 Integrates ARP spoofing, packet sniffing, and dynamic network scanning.
 
+Make sure you are using a virtual environment to avoid conflicts with system-wide packages:
+
+python3 -m venv env
+source env/bin/activate
+pip install -r requirements.txt
